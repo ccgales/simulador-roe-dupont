@@ -2,6 +2,7 @@
 Simulador ROE - Modelo DuPont
 =============================
 Funcionalidad 1: Cálculo de ratios financieros básicos.
+Funcionalidad 2: Visualización 3D del prisma ROE (Plotly).
 
 A partir de cuatro variables contables capturadas con sliders (utilidad neta,
 ventas, activos promedio y patrimonio promedio), la aplicación calcula:
@@ -16,12 +17,18 @@ ventas, activos promedio y patrimonio promedio), la aplicación calcula:
 Ejecución (con el entorno virtual activo):
     streamlit run roe_dupont.py
 
-Bibliotecas utilizadas: streamlit, pandas.
+El prisma 3D representa los tres componentes como las aristas de un
+paralelepípedo (ancho = margen neto, largo = rotación, alto = apalancamiento).
+Su volumen es el ROE: con el margen expresado en puntos porcentuales,
+volumen = margen (%) x rotación x apalancamiento = ROE (%).
+
+Bibliotecas utilizadas: streamlit, pandas, plotly.
 """
 
 from dataclasses import dataclass
 
 import pandas as pd
+import plotly.graph_objects as go
 import streamlit as st
 
 # ---------------------------------------------------------------------------
@@ -78,6 +85,192 @@ def calcular_dupont(
         roe=roe,
         roe_directo=roe_directo,
     )
+
+
+# --- Visualización: prisma 3D del ROE ---------------------------------------
+
+# Colores asociados a cada componente (se reutilizan en aristas y leyenda).
+COLOR_MARGEN = "#2E7D32"  # verde
+COLOR_ROTACION = "#EF6C00"  # naranja
+COLOR_APALANCAMIENTO = "#6A1B9A"  # morado
+
+# Techos mínimos de cada eje: mantienen una escala estable al mover los sliders,
+# de modo que el cambio de tamaño del prisma sea visible. Si un valor los
+# supera, el eje se amplía automáticamente.
+TECHO_MARGEN_PCT = 20.0
+TECHO_ROTACION = 3.0
+TECHO_APALANCAMIENTO = 6.0
+
+
+def _rango_eje(valor: float, techo: float) -> list[float]:
+    """Rango [mínimo, máximo] de un eje con holgura del 15 % sobre el valor.
+
+    Incluye siempre el cero; si el valor es negativo (p. ej. margen en caso de
+    pérdida) el eje se extiende hacia el lado negativo.
+    """
+    holgura = valor * 1.15
+    return [min(0.0, holgura), max(techo, holgura)]
+
+
+def crear_figura_prisma(resultado: ResultadoDuPont) -> go.Figure:
+    """Construye el prisma 3D del ROE a partir de los componentes DuPont.
+
+    Las tres aristas que parten del origen miden:
+        eje X -> margen neto (en puntos porcentuales)
+        eje Y -> rotación de activos (veces)
+        eje Z -> apalancamiento financiero (veces)
+
+    El volumen del prisma (X * Y * Z) equivale al ROE expresado en %.
+    """
+    # Dimensiones del prisma. El margen se pasa a puntos porcentuales para que
+    # el volumen resultante sea directamente el ROE en %.
+    x = resultado.margen_neto * 100
+    y = resultado.rotacion_activos
+    z = resultado.apalancamiento
+
+    # Un ROE negativo (pérdida) se resalta en rojo; el positivo en azul.
+    color_prisma = "#1565C0" if resultado.roe >= 0 else "#C62828"
+
+    # Los 8 vértices del paralelepípedo. Índice = bit_x + 2*bit_y + 4*bit_z.
+    vx = [0, x, 0, x, 0, x, 0, x]
+    vy = [0, 0, y, y, 0, 0, y, y]
+    vz = [0, 0, 0, 0, z, z, z, z]
+
+    # Caras del prisma: 6 caras x 2 triángulos, referenciadas por vértice.
+    triangulos = [
+        (0, 1, 3), (0, 3, 2),  # base inferior (z = 0)
+        (4, 5, 7), (4, 7, 6),  # base superior (z = alto)
+        (0, 1, 5), (0, 5, 4),  # cara frontal (y = 0)
+        (2, 3, 7), (2, 7, 6),  # cara posterior (y = largo)
+        (0, 2, 6), (0, 6, 4),  # cara izquierda (x = 0)
+        (1, 3, 7), (1, 7, 5),  # cara derecha (x = ancho)
+    ]
+    caras = go.Mesh3d(
+        x=vx,
+        y=vy,
+        z=vz,
+        i=[t[0] for t in triangulos],
+        j=[t[1] for t in triangulos],
+        k=[t[2] for t in triangulos],
+        color=color_prisma,
+        opacity=0.30,
+        flatshading=True,
+        hoverinfo="skip",
+        showlegend=False,
+    )
+
+    # Contorno del prisma: las 12 aristas dibujadas como una sola línea
+    # (None separa los segmentos).
+    aristas = [
+        (0, 1), (2, 3), (4, 5), (6, 7),  # paralelas al eje X
+        (0, 2), (1, 3), (4, 6), (5, 7),  # paralelas al eje Y
+        (0, 4), (1, 5), (2, 6), (3, 7),  # paralelas al eje Z
+    ]
+    ex, ey, ez = [], [], []
+    for a, b in aristas:
+        ex += [vx[a], vx[b], None]
+        ey += [vy[a], vy[b], None]
+        ez += [vz[a], vz[b], None]
+    contorno = go.Scatter3d(
+        x=ex,
+        y=ey,
+        z=ez,
+        mode="lines",
+        line={"color": color_prisma, "width": 3},
+        hoverinfo="skip",
+        showlegend=False,
+    )
+
+    def arista_componente(nombre, texto, color, xs, ys, zs):
+        """Arista destacada que parte del origen, con la medida del componente."""
+        return go.Scatter3d(
+            x=xs,
+            y=ys,
+            z=zs,
+            mode="lines+text",
+            name=nombre,
+            line={"color": color, "width": 9},
+            text=["", texto, ""],
+            textposition="top center",
+            textfont={"color": color, "size": 13},
+            hovertemplate=f"{nombre}: {texto}<extra></extra>",
+        )
+
+    # Las tres aristas que parten del origen representan cada componente DuPont.
+    arista_x = arista_componente(
+        "Margen neto",
+        f"{x:.2f}%",
+        COLOR_MARGEN,
+        [0, x / 2, x],
+        [0, 0, 0],
+        [0, 0, 0],
+    )
+    arista_y = arista_componente(
+        "Rotación de activos",
+        f"{y:.2f}x",
+        COLOR_ROTACION,
+        [0, 0, 0],
+        [0, y / 2, y],
+        [0, 0, 0],
+    )
+    arista_z = arista_componente(
+        "Apalancamiento financiero",
+        f"{z:.2f}x",
+        COLOR_APALANCAMIENTO,
+        [0, 0, 0],
+        [0, 0, 0],
+        [0, z / 2, z],
+    )
+
+    # Etiqueta con el ROE en el centro del prisma (su volumen).
+    centro = go.Scatter3d(
+        x=[x / 2],
+        y=[y / 2],
+        z=[z / 2],
+        mode="text",
+        text=[f"ROE<br>{resultado.roe:.2%}"],
+        textfont={"color": color_prisma, "size": 16},
+        hoverinfo="skip",
+        showlegend=False,
+    )
+
+    figura = go.Figure(data=[caras, contorno, arista_x, arista_y, arista_z, centro])
+    figura.update_layout(
+        title={
+            "text": (
+                "Prisma financiero DuPont: el volumen es el ROE<br>"
+                f"<sup>{x:.2f}% (margen) x {y:.2f} (rotación) x {z:.2f} "
+                f"(apalancamiento) = {resultado.roe:.2%}</sup>"
+            ),
+            "x": 0.5,
+        },
+        scene={
+            "xaxis": {
+                "title": {"text": "Margen neto (%)"},
+                "range": _rango_eje(x, TECHO_MARGEN_PCT),
+            },
+            "yaxis": {
+                "title": {"text": "Rotación de activos (veces)"},
+                "range": _rango_eje(y, TECHO_ROTACION),
+            },
+            "zaxis": {
+                "title": {"text": "Apalancamiento (veces)"},
+                "range": _rango_eje(z, TECHO_APALANCAMIENTO),
+            },
+            "aspectmode": "cube",
+            "camera": {"eye": {"x": 1.6, "y": 1.6, "z": 0.9}},
+        },
+        legend={
+            "orientation": "h",
+            "yanchor": "bottom",
+            "y": -0.05,
+            "xanchor": "center",
+            "x": 0.5,
+        },
+        margin={"l": 0, "r": 0, "t": 80, "b": 0},
+        height=620,
+    )
+    return figura
 
 
 # ---------------------------------------------------------------------------
@@ -191,6 +384,27 @@ with st.container(horizontal=True):
         f"{resultado.apalancamiento:.2f}x",
         help="Activos promedio / Patrimonio promedio. Mide cuánto del activo se financia con patrimonio ajeno.",
         border=True,
+    )
+
+# Prisma 3D: se reconstruye en cada cambio de los sliders, por lo que el
+# gráfico siempre refleja las variables de entrada actuales.
+st.subheader("Prisma ROE en 3D")
+with st.container(border=True):
+    st.plotly_chart(
+        crear_figura_prisma(resultado),
+        width="stretch",
+        alt="Prisma 3D del modelo DuPont: margen neto, rotación de activos y apalancamiento financiero, cuyo volumen equivale al ROE",
+    )
+    st.markdown(
+        "**Cómo interpretarlo:** cada arista del prisma es un componente del "
+        "modelo DuPont y su volumen equivale al ROE. Para aumentar el ROE se "
+        "puede ampliar cualquiera de las tres dimensiones:\n"
+        "- **Margen neto (verde):** mejorar la rentabilidad de cada venta.\n"
+        "- **Rotación de activos (naranja):** vender más con los mismos activos.\n"
+        "- **Apalancamiento (morado):** financiar más activos con deuda; "
+        "aumenta el ROE, pero también el riesgo financiero.\n\n"
+        "Una pérdida (margen negativo) invierte el prisma hacia el lado "
+        "negativo del eje y lo muestra en rojo."
     )
 
 # Detalle del cálculo: útil en clase para seguir la fórmula paso a paso.
