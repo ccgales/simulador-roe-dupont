@@ -3,6 +3,7 @@ Simulador ROE - Modelo DuPont
 =============================
 Funcionalidad 1: Cálculo de ratios financieros básicos.
 Funcionalidad 2: Visualización 3D del prisma ROE (Plotly).
+Funcionalidad 3: Estados financieros simplificados (Plotly).
 
 A partir de cuatro variables contables capturadas con sliders (utilidad neta,
 ventas, activos promedio y patrimonio promedio), la aplicación calcula:
@@ -273,6 +274,175 @@ def crear_figura_prisma(resultado: ResultadoDuPont) -> go.Figure:
     return figura
 
 
+# --- Estados financieros simplificados --------------------------------------
+
+# Paleta de los estados financieros (tonos suaves, coherentes entre gráficos).
+COLOR_VENTAS = "#81D4FA"  # celeste
+COLOR_GASTOS = "#F8BBD0"  # rosado
+COLOR_UTILIDAD = "#A5D6A7"  # verde suave
+COLOR_ACTIVOS = "#66BB6A"  # verde
+COLOR_PATRIMONIO = "#81D4FA"  # celeste
+COLOR_DEUDA = "#F48FB1"  # rosado
+
+
+@dataclass(frozen=True)
+class EstadoResultados:
+    """Estado de resultados simplificado: Ventas = Gastos + Utilidad neta."""
+
+    ventas: float
+    gastos: float  # Gastos totales estimados (costos, gastos, intereses e impuestos)
+    utilidad_neta: float
+
+
+@dataclass(frozen=True)
+class BalanceGeneral:
+    """Balance general simplificado: Activos = Deuda + Patrimonio."""
+
+    activos: float
+    deuda: float  # Pasivos estimados (activos - patrimonio)
+    patrimonio: float
+
+
+def calcular_estado_resultados(utilidad_neta: float, ventas: float) -> EstadoResultados:
+    """Estima el estado de resultados a partir de las ventas y la utilidad neta.
+
+    Los gastos son el saldo que explica la utilidad: Gastos = Ventas - Utilidad
+    neta. Así se cumple siempre que Ventas = Gastos + Utilidad neta.
+    """
+    return EstadoResultados(
+        ventas=ventas,
+        gastos=ventas - utilidad_neta,
+        utilidad_neta=utilidad_neta,
+    )
+
+
+def calcular_balance_general(
+    activos_promedio: float, patrimonio_promedio: float
+) -> BalanceGeneral:
+    """Estima el balance general a partir de los activos y el patrimonio.
+
+    La deuda es el saldo que financia los activos no cubiertos por patrimonio:
+    Deuda = Activos - Patrimonio, de modo que Activos = Deuda + Patrimonio.
+    Si el patrimonio supera a los activos (datos inconsistentes) la deuda se
+    limita a cero para no graficar un pasivo negativo.
+    """
+    return BalanceGeneral(
+        activos=activos_promedio,
+        deuda=max(activos_promedio - patrimonio_promedio, 0.0),
+        patrimonio=patrimonio_promedio,
+    )
+
+
+def crear_figura_estado_resultados(estado: EstadoResultados) -> go.Figure:
+    """Barras horizontales: Ventas, Gastos y Utilidad neta."""
+    categorias = ["Ventas", "Gastos", "Utilidad neta"]
+    valores = [estado.ventas, estado.gastos, estado.utilidad_neta]
+    colores = [COLOR_VENTAS, COLOR_GASTOS, COLOR_UTILIDAD]
+
+    # Etiqueta de cada barra: monto y porcentaje sobre ventas.
+    etiquetas = [
+        f"{valor:,.0f}  ({_dividir(valor, estado.ventas):.1%} de las ventas)"
+        for valor in valores
+    ]
+
+    figura = go.Figure(
+        go.Bar(
+            x=valores,
+            y=categorias,
+            orientation="h",
+            marker={"color": colores, "line": {"color": "#455A64", "width": 1}},
+            text=etiquetas,
+            textposition="outside",
+            cliponaxis=False,
+            hovertemplate="%{y}: %{x:,.0f}<extra></extra>",
+        )
+    )
+    figura.update_layout(
+        title={
+            "text": (
+                "Estado de resultados simplificado<br>"
+                "<sup>Ventas = Gastos + Utilidad neta</sup>"
+            ),
+            "x": 0.5,
+        },
+        xaxis={
+            "title": {"text": "Millones de la moneda de reporte"},
+            # Holgura a la derecha para que quepan las etiquetas.
+            "range": [min(0, estado.utilidad_neta * 1.2), estado.ventas * 1.6],
+            "zeroline": True,
+        },
+        # Ventas arriba y Utilidad neta abajo, como en un estado de resultados.
+        yaxis={"autorange": "reversed"},
+        showlegend=False,
+        height=420,
+        margin={"l": 10, "r": 10, "t": 80, "b": 50},
+    )
+    return figura
+
+
+def crear_figura_balance(balance: BalanceGeneral) -> go.Figure:
+    """Dos columnas apiladas y contiguas: Activos | Patrimonio (base) + Deuda (arriba)."""
+    lado_activos = "Activos"
+    lado_financiamiento = "Deuda + Patrimonio"
+
+    def etiqueta(valor: float) -> str:
+        """Monto y porcentaje respecto al total de activos."""
+        return f"{valor:,.0f}<br>({_dividir(valor, balance.activos):.1%})"
+
+    figura = go.Figure()
+    # Columna izquierda: activos totales.
+    figura.add_bar(
+        name="Activos",
+        x=[lado_activos],
+        y=[balance.activos],
+        marker={"color": COLOR_ACTIVOS, "line": {"color": "#455A64", "width": 1}},
+        text=[etiqueta(balance.activos)],
+        textposition="inside",
+    )
+    # Columna derecha: patrimonio (base) y deuda (encima) apilados.
+    figura.add_bar(
+        name="Patrimonio",
+        x=[lado_financiamiento],
+        y=[balance.patrimonio],
+        marker={"color": COLOR_PATRIMONIO, "line": {"color": "#455A64", "width": 1}},
+        text=[etiqueta(balance.patrimonio)],
+        textposition="inside",
+    )
+    figura.add_bar(
+        name="Deuda",
+        x=[lado_financiamiento],
+        y=[balance.deuda],
+        marker={"color": COLOR_DEUDA, "line": {"color": "#455A64", "width": 1}},
+        text=[etiqueta(balance.deuda)],
+        textposition="inside",
+    )
+    figura.update_layout(
+        barmode="stack",
+        # Sin espacio entre columnas: las dos barras quedan pegadas, como las
+        # dos caras de un balance (Activos | Deuda + Patrimonio).
+        bargap=0,
+        title={
+            "text": (
+                "Balance general simplificado<br>"
+                "<sup>Activos = Deuda + Patrimonio</sup>"
+            ),
+            "x": 0.5,
+        },
+        xaxis={"title": {"text": "Estructura del balance"}},
+        yaxis={"title": {"text": "Millones de la moneda de reporte"}},
+        legend={
+            "orientation": "h",
+            "yanchor": "bottom",
+            "y": -0.35,
+            "xanchor": "center",
+            "x": 0.5,
+        },
+        height=420,
+        margin={"l": 10, "r": 10, "t": 80, "b": 50},
+    )
+    return figura
+
+
 # ---------------------------------------------------------------------------
 # 2. CONFIGURACIÓN DE LA PÁGINA
 # ---------------------------------------------------------------------------
@@ -406,6 +576,46 @@ with st.container(border=True):
         "Una pérdida (margen negativo) invierte el prisma hacia el lado "
         "negativo del eje y lo muestra en rojo."
     )
+
+# Estados financieros simplificados (Funcionalidad 3): se derivan de las mismas
+# variables de entrada, por lo que siempre son coherentes con el ROE mostrado.
+estado_resultados = calcular_estado_resultados(utilidad_neta, ventas)
+balance = calcular_balance_general(activos_promedio, patrimonio_promedio)
+
+st.subheader("Estados financieros simplificados")
+col_resultados, col_balance = st.columns(2)
+
+with col_resultados:
+    with st.container(border=True):
+        st.plotly_chart(
+            crear_figura_estado_resultados(estado_resultados),
+            width="stretch",
+            alt="Gráfico de barras horizontales del estado de resultados: ventas, gastos y utilidad neta",
+        )
+        st.caption(
+            f"Gastos estimados = Ventas - Utilidad neta = {estado_resultados.gastos:,.0f}. "
+            f"Verificación: {estado_resultados.gastos:,.0f} + "
+            f"{estado_resultados.utilidad_neta:,.0f} = {estado_resultados.ventas:,.0f}."
+        )
+
+with col_balance:
+    with st.container(border=True):
+        st.plotly_chart(
+            crear_figura_balance(balance),
+            width="stretch",
+            alt="Gráfico de columnas apiladas del balance general: activos frente a deuda y patrimonio",
+        )
+        if patrimonio_promedio <= activos_promedio:
+            st.caption(
+                f"Deuda estimada = Activos - Patrimonio = {balance.deuda:,.0f}. "
+                f"Verificación: {balance.deuda:,.0f} + {balance.patrimonio:,.0f} "
+                f"= {balance.activos:,.0f}."
+            )
+        else:
+            st.caption(
+                "El patrimonio supera a los activos: la deuda se muestra en cero "
+                "y el balance no cuadra. Revise las variables de entrada."
+            )
 
 # Detalle del cálculo: útil en clase para seguir la fórmula paso a paso.
 st.subheader("Detalle del cálculo")
