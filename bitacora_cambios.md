@@ -118,6 +118,20 @@ Registro cronológico de los cambios del proyecto y de los aprendizajes asociado
 
 ---
 
+### 2026-10-22 - Despliegue en la nube: error `ModuleNotFoundError` (plotly)
+
+**Descripción del cambio**
+- Al desplegar en Streamlit Cloud la aplicación fallaba en `import plotly.graph_objects as go` con `ModuleNotFoundError`.
+- Causa: las dependencias estaban en `documentos/requiriments.txt` (subcarpeta y con error ortográfico). Streamlit Cloud solo instala lo declarado en un `requirements.txt` ubicado en la raíz del repositorio, por lo que `plotly` no se instaló.
+- Se creó `requirements.txt` en la raíz con `streamlit>=1.66`, `plotly`, `pandas` y `numpy`, y se actualizó el README para usarlo.
+
+**Aprendizaje asociado**
+- Un proyecto que funciona en el entorno local puede fallar en la nube si las dependencias no están declaradas donde la plataforma las espera: el archivo debe llamarse `requirements.txt` y estar en la raíz.
+- Declarar la versión mínima de Streamlit evita que la nube instale una versión anterior sin las funciones usadas (`alt=`, `title=` en alertas, contenedores horizontales).
+- Antes de desplegar conviene probar la instalación desde cero con `pip install -r requirements.txt` en un entorno limpio.
+
+---
+
 ## Aprendizajes generales
 
 | Tema | Aprendizaje |
